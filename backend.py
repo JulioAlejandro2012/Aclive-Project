@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-import requests
+from Aclive_Helper import llm 
 
 app = Flask(__name__)
 
@@ -25,10 +25,14 @@ def elevation():
 # Example endpoint: Predict roads with elevation using AI assistant (stub)
 @app.route('/predict_roads', methods=['POST'])
 def predict_roads():
-    # Here you would use your LLM to analyze elevation data and predict roads
-    # For now, just echo the input
     data = request.json
-    return jsonify({'prediction': 'stub', 'input': data})
+    elevations = data.get('elevations', [])
+    # Format the elevation data into a prompt for the LLM
+    prompt = "Analyze the following elevation data for roads. Identify which roads have significant elevation changes and describe them. Data: "
+    prompt += str(elevations)
+    # Call the LLM
+    analysis = llm(prompt)
+    return jsonify({'prediction': analysis, 'input': elevations})
 
 if __name__ == '__main__':
     app.run(debug=True)

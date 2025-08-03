@@ -11,12 +11,59 @@
 </head>
 <body>
   <div id="map"></div>
+  <div id="chat-container" style="position: absolute; top: 20px; right: 20px; width: 300px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.2); padding: 16px; z-index: 1000;">
+    <h3>AI Chat</h3>
+    <div id="chat-messages" style="height: 200px; overflow-y: auto; border: 1px solid #ccc; margin-bottom: 8px; padding: 8px; background: #f9f9f9;"></div>
+    <input type="text" id="chat-input" placeholder="Type your message..." style="width: 80%; padding: 6px;" />
+    <button id="chat-send" style="width: 18%; padding: 6px;">Send</button>
+  </div>
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
   <script>
-    var map = L.map('map').setView([51.505, -0.09], 13); // Centered on London
+    var map = L.map('map').setView([-23.5505, -46.6333], 13); // Centered on São Paulo, Brazil
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap contributors'
     }).addTo(map);
+
+    map.locate({setView: true, maxZoom: 16});
+
+    map.on('locationfound', function(e) {
+      L.marker(e.latlng).addTo(map)
+        .bindPopup('You are here!').openPopup();
+    });
+
+    map.on('locationerror', function(e) {
+      alert('Location access denied.');
+    });
+
+    // Simple chat interface logic
+    const chatMessages = document.getElementById('chat-messages');
+    const chatInput = document.getElementById('chat-input');
+    const chatSend = document.getElementById('chat-send');
+
+    chatSend.onclick = async function() {
+      const userMsg = chatInput.value.trim();
+      if (!userMsg) return;
+      chatMessages.innerHTML += `<div><b>You:</b> ${userMsg}</div>`;
+      chatInput.value = '';
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+
+      // Send message to backend AI
+      try {
+        const res = await fetch('/predict_roads', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ message: userMsg })
+        });
+        const data = await res.json();
+        chatMessages.innerHTML += `<div><b>AI:</b> ${data.prediction || 'No response.'}</div>`;
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+      } catch (err) {
+        chatMessages.innerHTML += `<div style="color:red"><b>AI:</b> Error connecting to backend.</div>`;
+      }
+    };
+    chatInput.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') chatSend.click();
+    });
   </script>
 </body>
 </html>
