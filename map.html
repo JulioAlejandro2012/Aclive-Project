@@ -11,12 +11,8 @@
 </head>
 <body>
   <div id="map"></div>
-  <div id="chat-container" style="position: absolute; top: 20px; right: 20px; width: 300px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.2); padding: 16px; z-index: 1000;">
-    <h3>AI Chat</h3>
-    <div id="chat-messages" style="height: 200px; overflow-y: auto; border: 1px solid #ccc; margin-bottom: 8px; padding: 8px; background: #f9f9f9;"></div>
-    <input type="text" id="chat-input" placeholder="Type your message..." style="width: 80%; padding: 6px;" />
-    <button id="chat-send" style="width: 18%; padding: 6px;">Send</button>
-  </div>
+  <button id="show-elevation" style="position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 1000; padding: 10px 16px; background: #1976d2; color: #fff; border: none; border-radius: 6px; font-size: 16px; cursor: pointer;">Show Nearby Roads with Elevation</button>
+  <div id="loading-message" style="display:none; position:absolute; top:60px; left:50%; transform:translateX(-50%); z-index:2000; background:#fff; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,0.2); padding:12px 24px; font-size:18px; color:#1976d2;">Loading data...</div>
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
   <script>
     var map = L.map('map').setView([-23.5505, -46.6333], 13); // Centered on São Paulo, Brazil
@@ -35,35 +31,149 @@
       alert('Location access denied.');
     });
 
-    // Simple chat interface logic
-    const chatMessages = document.getElementById('chat-messages');
-    const chatInput = document.getElementById('chat-input');
-    const chatSend = document.getElementById('chat-send');
+    // ...existing code...
 
-    chatSend.onclick = async function() {
-      const userMsg = chatInput.value.trim();
-      if (!userMsg) return;
-      chatMessages.innerHTML += `<div><b>You:</b> ${userMsg}</div>`;
-      chatInput.value = '';
-      chatMessages.scrollTop = chatMessages.scrollHeight;
-
-      // Send message to backend AI
-      try {
-        const res = await fetch('/predict_roads', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ message: userMsg })
-        });
-        const data = await res.json();
-        chatMessages.innerHTML += `<div><b>AI:</b> ${data.prediction || 'No response.'}</div>`;
-        chatMessages.scrollTop = chatMessages.scrollHeight;
-      } catch (err) {
-        chatMessages.innerHTML += `<div style="color:red"><b>AI:</b> Error connecting to backend.</div>`;
-      }
-    };
-    chatInput.addEventListener('keydown', function(e) {
-      if (e.key === 'Enter') chatSend.click();
+document.getElementById('show-elevation').onclick = async function() {
+  const loadingDiv = document.getElementById('loading-message');
+  loadingDiv.style.display = 'block';
+  // Try to get user's current location
+  let userLat, userLon;
+  let locationFound = false;
+  // Remove previous overlays except the base tile layer
+  map.eachLayer(function(layer) {
+    if (layer instanceof L.Polyline) {
+      map.removeLayer(layer);
+    }
+    // Remove only non-user markers
+    if (layer instanceof L.Marker && !layer.options.icon) {
+      map.removeLayer(layer);
+    }
+  });
+  // Try geolocation
+  await new Promise(resolve => {
+    map.locate({setView: false, maxZoom: 16});
+    map.once('locationfound', function(e) {
+      userLat = e.latlng.lat;
+      userLon = e.latlng.lng;
+      locationFound = true;
+      // Mark user location with a distinct icon
+      const userIcon = L.icon({
+        iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+        iconSize: [25, 41],
+        iconAnchor: [12, 41],
+        popupAnchor: [1, -34],
+        shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+        shadowSize: [41, 41]
+      });
+      L.marker(e.latlng, {icon: userIcon}).addTo(map).bindPopup('You are here!').openPopup();
+      resolve();
     });
+    map.once('locationerror', function() {
+      resolve();
+    });
+    // Timeout fallback after 3 seconds
+    setTimeout(resolve, 3000);
+  });
+  // Fallback to map center if location not found
+  if (!locationFound) {
+    const center = map.getCenter();
+    userLat = center.lat;
+    userLon = center.lng;
+    L.marker(center, {icon: userIcon}).addTo(map).bindPopup('Using map center as location').openPopup();
+  }
+
+  // Query nearby roads from OpenStreetMap Overpass API
+  // Use a backup Overpass endpoint
+  const overpassUrl = 'https://lz4.overpass-api.de/api/interpreter';
+  const query = `[out:json];way["highway"](around:500,${userLat},${userLon});out geom;`;
+  try {
+    const overpassRes = await fetch(overpassUrl, {
+      method: 'POST',
+      body: query,
+      headers: { 'Content-Type': 'text/plain' }
+    });
+    const overpassData = await overpassRes.json();
+    console.log('Overpass data:', overpassData);
+    // Collect coordinates from road geometries (limit to first 50)
+    let coordinates = [];
+    overpassData.elements.forEach(way => {
+      if (way.geometry) {
+        way.geometry.forEach(pt => {
+          if (coordinates.length < 50) {
+            coordinates.push({ lat: pt.lat, lon: pt.lon });
+          }
+        });
+      }
+    });
+    console.log('Coordinates sent for elevation:', coordinates);
+    if (coordinates.length === 0) {
+      alert('No nearby roads found.');
+      return;
+    }
+    // Send coordinates to backend for elevation
+    const res = await fetch('http://127.0.0.1:5000/elevation', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ coordinates })
+    });
+    const elevationData = await res.json();
+    console.log('Elevation data:', elevationData);
+
+    // Color code each street/road segment by steepness (gradient)
+    let idx = 0;
+    overpassData.elements.forEach(way => {
+      if (way.geometry && way.geometry.length > 1) {
+        let prev = null;
+        way.geometry.forEach((pt, i) => {
+          if (prev && elevationData[idx]) {
+            // Calculate gradient (rise/run)
+            const elev1 = elevationData[idx - 1]?.elevation;
+            const elev2 = elevationData[idx]?.elevation;
+            const lat1 = prev.lat, lon1 = prev.lon;
+            const lat2 = pt.lat, lon2 = pt.lon;
+            // Approximate distance in meters
+            const R = 6371000;
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            const distance = R * c;
+            const rise = elev2 - elev1;
+            const gradient = (distance > 0) ? (rise / distance) : 0;
+            // Color logic: green for flat, yellow for moderate, red for steep
+            let color = 'green';
+            if (gradient > 0.08) {
+              color = 'red'; // Steep
+            } else if (gradient > 0.04) {
+              color = 'yellow'; // Moderate
+            }
+            L.polyline([[lat1, lon1], [lat2, lon2]], {color, weight: 5}).addTo(map);
+          }
+          prev = pt;
+          idx++;
+        });
+      } else if (way.geometry) {
+        idx += way.geometry.length;
+      }
+    });
+
+    // Add elevation info as popup to each point (limit to first 50 for clarity)
+    const elevationIcon = L.divIcon({
+      className: 'elevation-marker',
+      html: '<div style="background:#fff;border-radius:50%;border:2px solid #1976d2;width:16px;height:16px;"></div>',
+      iconSize: [16, 16],
+      iconAnchor: [8, 8]
+    });
+    elevationData.slice(0, 50).forEach(pt => {
+      L.marker([pt.lat, pt.lon], {icon: elevationIcon}).addTo(map)
+        .bindPopup('Elevation: ' + pt.elevation + ' m');
+    });
+    loadingDiv.style.display = 'none';
+  } catch (err) {
+    loadingDiv.style.display = 'none';
+    alert('Error fetching nearby roads or elevation data.');
+  }
+};
   </script>
 </body>
 </html>
